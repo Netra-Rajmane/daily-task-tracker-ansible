@@ -1,0 +1,74 @@
+
+---
+- name: Configure and deploy Daily Task Tracker API
+  hosts: task_tracker_servers
+  connection: local
+  become: false
+
+  vars:
+    app_dir: "{{ playbook_dir }}"
+    app_python: "{{ playbook_dir }}/venv/bin/python"
+    app_file: "{{ playbook_dir }}/files/app.py"
+    app_log: "{{ playbook_dir }}/app.log"
+    app_port: 5000
+
+  tasks:
+    - name: Check Python installation
+      ansible.builtin.command: python3 --version
+      register: python_version
+      changed_when: false
+
+    - name: Display Python version
+      ansible.builtin.debug:
+        msg: "{{ python_version.stdout }}"
+
+    - name: Install Flask dependencies
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/files/requirements.txt"
+        virtualenv: "{{ app_dir }}/venv"
+        virtualenv_command: python3 -m venv
+
+    - name: Verify application source file
+      ansible.builtin.stat:
+        path: "{{ app_file }}"
+      register: app_source
+
+    - name: Verify application exists
+      ansible.builtin.assert:
+        that:
+          - app_source.stat.exists
+        success_msg: "Application file found successfully"
+
+    - name: Check whether API is already healthy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ app_port }}/health"
+        method: GET
+        status_code: 200
+      register: initial_health
+      failed_when: false
+      changed_when: false
+
+    - name: Start Flask API in background
+      ansible.builtin.shell: >
+        nohup {{ app_python }} {{ app_file }}
+        > {{ app_log }} 2>&1 < /dev/null &
+      args:
+        executable: /bin/bash
+      async: 5
+      poll: 0
+      when: initial_health.status | default(0) != 200
+
+    - name: Verify API health
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ app_port }}/health"
+        method: GET
+        status_code: 200
+        return_content: true
+      register: final_health
+      retries: 10
+      delay: 2
+      until: final_health.status == 200
+
+    - name: Display deployment result
+      ansible.builtin.debug:
+        msg: "Daily Task Tracker API is running. Status: {{ final_health.json.status }}"
